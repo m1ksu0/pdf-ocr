@@ -1,0 +1,28 @@
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+.pytest_cache/
+
+# Tesseract-ohjelma ja kielimallit asennetaan erikseen (ks. README.md), ei repoon
+*.traineddata
+Tesseract-OCR/
+tessdata/
+
+# Työkalun tuottamat tulostiedostot (voivat sisältää luottamuksellista aineistoa)
+*(teksti).docx
+*(hakukelpoinen).pdf
+*(pelkkä teksti).pdf
+out/
+output/
+
+# Testaus- ja syöteaineisto
+*.pdf
+!docs/**/*.pdf
+
+# Editorit ja käyttöjärjestelmä
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
