@@ -18,6 +18,12 @@ Käyttötarkoitus:
       3) Pelkkä teksti PDF-muodossa -- teksti uudelleenaseteltuna uuteen,
          kevyeen PDF:ään (ei alkuperäistä ulkoasua, mutta pieni ja selkeä)
 
+Moottorit (--engine):
+    tesseract  -- oletus; nopea, tukee suomen ä/ö-merkkejä, vaatii Tesseract-asennuksen
+    rapidocr   -- syväoppimispohjainen (PaddleOCR-mallit); lukee täytettyjen lomakkeiden
+                  numerot usein paremmin ilman esikäsittelyä, mutta ei tunnista ä/ö-merkkejä
+                  (asennus: pip install -r requirements-rapidocr.txt)
+
 Edellytykset:
     - Tesseract OCR asennettuna koneelle, katso README.md
     - Suomenkielinen kielidata (fin.traineddata) Tesseractin tessdata-kansiossa
@@ -25,7 +31,7 @@ Edellytykset:
 
 Käyttö:
     python ocr_pdf.py <tiedosto.pdf> [--output docx pdf-searchable pdf-text]
-                       [--lang fin_best] [--dpi 300] [--outdir .]
+                       [--engine tesseract|rapidocr] [--lang fin_best] [--dpi 400] [--outdir .]
                        [--tesseract-cmd "C:\\Program Files\\Tesseract-OCR\\tesseract.exe"]
 
     Jos --output jätetään pois, skripti kysyy interaktiivisesti valikosta.
@@ -39,6 +45,7 @@ Esimerkkejä:
 from __future__ import annotations
 
 import argparse
+import io
 import os
 import re
 from collections import defaultdict
@@ -63,6 +70,7 @@ MIN_TEXT_CHARS = 20
 DRAWINGS_THRESHOLD = 100
 
 VALID_OUTPUTS = {"docx", "pdf-searchable", "pdf-text"}
+VALID_ENGINES = ("tesseract", "rapidocr")
 
 
 def configure_tesseract(tesseract_cmd: str | None) -> None:
@@ -162,6 +170,53 @@ def remove_form_lines(gray: Image.Image, dpi: int) -> Image.Image:
     return Image.fromarray(255 - cleaned)
 
 
+_RAPIDOCR = None
+
+
+def get_rapidocr():
+    """Lataa RapidOCR-moottorin vasta tarvittaessa (valinnainen riippuvuus)."""
+    global _RAPIDOCR
+    if _RAPIDOCR is None:
+        try:
+            from rapidocr_onnxruntime import RapidOCR
+        except ImportError:
+            sys.exit("RapidOCR ei ole asennettu. Asenna: python -m pip install -r requirements-rapidocr.txt")
+        _RAPIDOCR = RapidOCR()
+    return _RAPIDOCR
+
+
+def rapidocr_recognize(image: Image.Image) -> list[tuple[list, str]]:
+    """Ajaa RapidOCR:n kuvalle ja palauttaa listan (nelikulmio, teksti)."""
+    result, _ = get_rapidocr()(np.array(image.convert("RGB")))
+    return [(box, text) for box, text, _score in (result or [])]
+
+
+def boxes_to_text(boxes: list[tuple[list, str]]) -> str:
+    """
+    Kokoaa RapidOCR:n tekstilaatikot riveiksi: laatikot ryhmitellään samalle
+    riville pystysuuntaisen sijainnin perusteella ja järjestetään vasemmalta
+    oikealle, jolloin esim. lomakkeen selite ja sen viereen kirjoitettu arvo
+    päätyvät samalle riville.
+    """
+    items = []
+    for box, text in boxes:
+        xs = [pt[0] for pt in box]
+        ys = [pt[1] for pt in box]
+        items.append({"x": min(xs), "yc": sum(ys) / len(ys), "h": max(ys) - min(ys), "text": text})
+    if not items:
+        return ""
+    heights = sorted(it["h"] for it in items)
+    tolerance = 0.6 * heights[len(heights) // 2]
+    items.sort(key=lambda it: it["yc"])
+    lines: list[list[dict]] = []
+    for it in items:
+        if lines and abs(it["yc"] - sum(x["yc"] for x in lines[-1]) / len(lines[-1])) <= tolerance:
+            lines[-1].append(it)
+        else:
+            lines.append([it])
+    return "\n".join("  ".join(x["text"] for x in sorted(line, key=lambda x: x["x"])) for line in lines)
+
+
 def tesseract_config(psm: int) -> str:
     """Tesseractin komentoriviasetukset: sivunjakotila (psm) ja säilytetyt välilyönnit."""
     return f"--psm {psm} -c preserve_interword_spaces=1"
@@ -186,13 +241,14 @@ def merge_ocr_and_native(ocr_text: str, native_text: str) -> str:
 
 
 def extract_pages(pdf_path: Path, lang: str, dpi: int, psm: int = 3, preprocess: bool = True,
-                  remove_lines: bool = False) -> list[dict]:
+                  remove_lines: bool = False, engine: str = "tesseract") -> list[dict]:
     """
     Käy PDF:n sivut läpi ja palauttaa listan sanakirjoja:
         {"index": int, "text": str, "source": "native"|"ocr", "image": PIL.Image|None}
 
     "image" on läsnä vain OCR-sivuilla (tarvitaan hakukelpoisen PDF:n koontiin).
-    Jos preprocess on True, kuva esikäsitellään (vinouden korjaus, kohinan poisto,
+    RapidOCR-moottorilla sivun sanakirjassa on lisäksi "boxes" (tekstilaatikot) ja "dpi".
+    Jos preprocess on True (vain Tesseract), kuva esikäsitellään (vinouden korjaus, kohinan poisto,
     kontrasti, terävöitys) ennen OCR:ää.
     """
     doc = pymupdf.open(pdf_path)
@@ -208,15 +264,22 @@ def extract_pages(pdf_path: Path, lang: str, dpi: int, psm: int = 3, preprocess:
             print(f"  Sivu {i + 1}: tyhjä sivu")
         else:
             image = render_page_to_image(page, dpi)
-            if preprocess:
-                image = preprocess_image(image)
-            if remove_lines:
-                image = remove_form_lines(ImageOps.grayscale(image), dpi)
-            ocr_text = pytesseract.image_to_string(image, lang=lang, config=tesseract_config(psm)).strip()
-            ocr_text = ocr_text.replace("­", "-")  # Tesseract palauttaa viivan tilalla usein pehmeän tavuviivan
+            boxes = None
+            if engine == "rapidocr":
+                # RapidOCR toimii parhaiten alkuperäisellä kuvalla, esikäsittelyä ei käytetä
+                boxes = rapidocr_recognize(image)
+                ocr_text = boxes_to_text(boxes).strip()
+            else:
+                if preprocess:
+                    image = preprocess_image(image)
+                if remove_lines:
+                    image = remove_form_lines(ImageOps.grayscale(image), dpi)
+                ocr_text = pytesseract.image_to_string(image, lang=lang, config=tesseract_config(psm)).strip()
+            ocr_text = ocr_text.replace("\u00ad", "-")  # pehmeä tavuviiva -> tavallinen viiva
             text = merge_ocr_and_native(ocr_text, native_text)
             source = "hybrid" if native_text else "ocr"
-            pages.append({"index": i, "text": text, "source": source, "image": image})
+            pages.append({"index": i, "text": text, "source": source, "image": image,
+                          "boxes": boxes, "dpi": dpi})
             extra = f", omaa tekstikerrosta {len(native_text)} merkkiä" if native_text else ""
             print(f"  Sivu {i + 1}: OCR ({len(ocr_text)} merkkiä tunnistettu{extra})")
     doc.close()
@@ -242,6 +305,25 @@ def save_docx(pages: list[dict], pdf_path: Path, outdir: Path, lang: str) -> Pat
     return out_path
 
 
+def add_rapidocr_page(result: pymupdf.Document, p: dict) -> None:
+    """Lisää sivun kuvana ja asettaa RapidOCR:n tunnistaman tekstin näkymättömänä sen päälle."""
+    image, boxes, dpi = p["image"], p["boxes"], p["dpi"]
+    scale = 72.0 / dpi
+    page = result.new_page(width=image.width * scale, height=image.height * scale)
+    buffer = io.BytesIO()
+    image.convert("RGB").save(buffer, format="JPEG", quality=85)
+    page.insert_image(page.rect, stream=buffer.getvalue())
+    font_path = find_unicode_font()
+    for box, text in boxes:
+        xs = [pt[0] for pt in box]
+        ys = [pt[1] for pt in box]
+        height = (max(ys) - min(ys)) * scale
+        fontsize = max(4.0, height * 0.8)
+        origin = (min(xs) * scale, max(ys) * scale - height * 0.15)
+        page.insert_text(origin, text, fontsize=fontsize, fontname="unifont" if font_path else "helv",
+                         fontfile=str(font_path) if font_path else None, render_mode=3)
+
+
 def save_searchable_pdf(pdf_path: Path, pages: list[dict], outdir: Path, lang: str, psm: int = 3) -> Path:
     """
     Kokoaa hakukelpoisen PDF:n: sivut, joilla oli jo tekstikerros, kopioidaan
@@ -257,6 +339,8 @@ def save_searchable_pdf(pdf_path: Path, pages: list[dict], outdir: Path, lang: s
     for p in pages:
         if p["source"] == "native":
             result.insert_pdf(src, from_page=p["index"], to_page=p["index"])
+        elif p.get("boxes") is not None:
+            add_rapidocr_page(result, p)
         else:
             # image_to_pdf_or_hocr palauttaa yhden sivun PDF:n, jossa kuva ja
             # sen päällä näkymätön (render_mode invisible) tekstikerros.
@@ -387,6 +471,8 @@ def main() -> None:
         "--output", nargs="+", choices=sorted(VALID_OUTPUTS),
         help="Lopputulosmuoto(t). Jos jätetään pois, kysytään interaktiivisesti.",
     )
+    parser.add_argument("--engine", choices=VALID_ENGINES, default="tesseract",
+                        help="OCR-moottori: tesseract (oletus) tai rapidocr (syväoppiminen; ei tunnista ä/ö-merkkejä)")
     parser.add_argument("--lang", default="fin_best",
                         help="Tesseract-kielikoodi (oletus: fin_best, tarkempi suomen malli; jos sitä ei ole asennettuna, käytetään fin)")
     parser.add_argument("--dpi", type=int, default=400, help="Renderöintitarkkuus OCR-sivuille (oletus: 400)")
@@ -408,7 +494,13 @@ def main() -> None:
 
     configure_tesseract(args.tesseract_cmd)
 
-    if args.lang == "fin_best":
+    if args.engine == "rapidocr":
+        ignored = [name for name, on in (("--remove-lines", args.remove_lines),
+                                         ("--psm", args.psm != 3), ("--lang", args.lang != "fin_best")) if on]
+        if ignored:
+            print("Huom: " + ", ".join(ignored) + " ei vaikuta RapidOCR-moottoriin.")
+        print("OCR-moottori: rapidocr (ei tunnista ä/ö-merkkejä)")
+    elif args.lang == "fin_best":
         try:
             installed = pytesseract.get_languages()
         except Exception:
@@ -416,7 +508,8 @@ def main() -> None:
         if installed and "fin_best" not in installed:
             print("Huom: fin_best-mallia ei löydy, käytetään perusmallia 'fin' (ks. README).")
             args.lang = "fin"
-    print(f"OCR-kieli: {args.lang}")
+    if args.engine == "tesseract":
+        print(f"OCR-moottori: tesseract, kieli: {args.lang}")
 
     outdir = args.outdir or args.pdf.parent
     outdir.mkdir(parents=True, exist_ok=True)
@@ -424,7 +517,7 @@ def main() -> None:
     outputs = args.output or ask_output_formats()
 
     print(f"\nKäsitellään: {args.pdf.name}")
-    pages = extract_pages(args.pdf, args.lang, args.dpi, args.psm, not args.no_preprocess, args.remove_lines)
+    pages = extract_pages(args.pdf, args.lang, args.dpi, args.psm, not args.no_preprocess, args.remove_lines, args.engine)
 
     print("\nTallennetaan:")
     if "docx" in outputs:

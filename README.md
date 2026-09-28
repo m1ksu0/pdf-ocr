@@ -81,7 +81,7 @@ Muille kielille saman voi tehdä samasta repositoriosta, ja kielen valitaan
 
 - **Vedä ja pudota:** vedä PDF hiirellä `ocr_pdf.bat`-tiedoston päälle.
 - **Tuplaklikkaus:** avaa `ocr_pdf.bat` ja vedä PDF ikkunaan tai kirjoita polku.
-- Bat kysyy tarkkuuden (dpi, oletus 400) ja sivunjakotilan (psm, oletus 3).
+- Bat kysyy ensin moottorin numerolla (**1** = Tesseract, **2** = RapidOCR; Enter = 1), sitten tarkkuuden (dpi, oletus 400) ja sivunjakotilan (psm, oletus 3).
   Enter hyväksyy oletuksen. Sen jälkeen skripti kysyy tulostemuodon valikosta.
 - Ikkuna jää auki ajon jälkeen, jotta näet tulostiedostojen polut.
 
@@ -110,6 +110,7 @@ Tulostiedostot tallennetaan oletuksena lähde-PDF:n kansioon nimillä
 | Valinta | Selitys |
 |---|---|
 | `--output docx pdf-searchable pdf-text` | Tulostemuoto(t). Jos jätetään pois, kysytään valikosta. |
+| `--engine tesseract` | OCR-moottori: `tesseract` (oletus) tai `rapidocr` (ks. yllä). |
 | `--lang fin_best` | OCR-kieli. Oletus `fin_best`. Useita: `--lang fin+eng`. |
 | `--dpi 400` | Sivun renderöintitarkkuus OCR:ää varten. Oletus 400. Isompi (esim. 600) voi auttaa pienellä tekstillä, mutta hidastaa. |
 | `--psm 3` | Sivunjakotila. `3` automaattinen (oletus), `4` yksi sarake, `6` yksi yhtenäinen lohko (lomakkeet, taulukot), `11`/`12` hajanainen teksti. |
@@ -118,7 +119,34 @@ Tulostiedostot tallennetaan oletuksena lähde-PDF:n kansioon nimillä
 | `--outdir "C:\kansio"` | Tulostekansio. Oletus: lähde-PDF:n kansio. |
 | `--tesseract-cmd "polku\tesseract.exe"` | Tesseractin polku, jos sitä ei löydy automaattisesti. |
 
+### OCR-moottorit (`--engine`)
+
+| Moottori | Vahvuudet | Heikkoudet |
+|---|---|---|
+| `tesseract` (oletus) | Nopea (1–2 s/sivu), tukee suomen ä/ö-merkkejä, toimii ilman näytönohjainta | Täytetyt lomakkeet, joissa numerot ovat viivojen päällä, vaativat usein esikäsittelyä (`--remove-lines`, `--psm 6`) |
+| `rapidocr` | Syväoppimiseen perustuva (PaddleOCR:n mallit). Lukee täytettyjen lomakkeiden numerot usein hyvin ilman esikäsittelyä | Ei tunnista ä/ö-merkkejä (kirjoittaa esim. "tyot", "lisa"). Hitaampi (n. 7–9 s/sivu). `--lang`, `--psm` ja `--remove-lines` eivät vaikuta |
+
+RapidOCR on valinnainen. Asenna se erikseen:
+
+```bash
+python -m pip install -r requirements-rapidocr.txt
+```
+
+```bash
+python ocr_pdf.py lomake.pdf --engine rapidocr
+```
+
+Kokeilu kahdella sivulla (skannattu täytetty lomake ja sähköpostista kuvattu
+sivu) antoi seuraavaa: kaikki testatut syväoppimismoottorit (RapidOCR,
+EasyOCR) lukivat täytetyn lomakkeen numerot oikein ilman esikäsittelyä, kun
+Tesseract tarvitsi siihen viivanpoiston. Otos on pieni, joten kokeile omalla
+aineistollasi. Eri moottorit voivat erehtyä eri kohdissa, joten tärkeät
+numerot kannattaa tarkistaa käsin.
+
 ### Tarkkuutta parantavat toiminnot
+
+Nämä koskevat Tesseract-moottoria.
+
 
 - **Esikäsittely (päällä oletuksena):** sivu muutetaan harmaasävyiseksi,
   vinous korjataan automaattisesti (±5°), kohina poistetaan, kontrastia
@@ -154,6 +182,7 @@ Tulostiedostot tallennetaan oletuksena lähde-PDF:n kansioon nimillä
   `MIN_TEXT_CHARS` (kuinka paljon tekstiä sivulla pitää olla, jotta se
   luetaan suoraan) ja `DRAWINGS_THRESHOLD` (kuinka monta piirtoelementtiä
   sivulla saa olla ennen kuin se tulkitaan sekasivuksi).
+- Kun tulosteesta kopioi tekstiä, väliviiva voi kopioitua "pehmeänä tavuviivana" (näkymätön merkki U+00AD). Se ei näy PDF:ssä, mutta voi vaikuttaa haussa.
 - Tulosteiden PDF-teksti käyttää Windowsin Arial-fonttia, jotta €-merkki ja
   ä/ö säilyvät. Jos sitä ei löydy, € korvataan tekstillä "EUR".
 
@@ -162,5 +191,6 @@ Tulostiedostot tallennetaan oletuksena lähde-PDF:n kansioon nimillä
 - `ocr_pdf.py` — itse skripti
 - `ocr_pdf.bat` — vedä ja pudota -käynnistin Windowsille
 - `requirements.txt` — Python-riippuvuudet
+- `requirements-rapidocr.txt` — valinnainen: RapidOCR-moottori
 - `.gitignore` — pitää pois tulosteet, PDF-aineiston, kielimallit ja välimuistit
 - `README.md` — tämä tiedosto
