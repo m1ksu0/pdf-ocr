@@ -74,10 +74,20 @@ from docx.shared import Pt
 # merkkejä, sivu tulkitaan kuvasivuksi ja ajetaan OCR:n läpi.
 MIN_TEXT_CHARS = 20
 
-# Jos sivulla on kuvia tai paljon piirtoelementtejä (esim. sähköpostista tulostetun
-# sivun kirjaimet ovat vektoripolkuja, ei tekstiä), sivun oma tekstikerros ei
-# välttämättä kata kaikkea näkyvää sisältöä, ja sivu ajetaan OCR:n läpi.
-DRAWINGS_THRESHOLD = 100
+# Jos sivulla on kuvia, sivu ajetaan aina OCR:n läpi. Piirtoelementtien pelkkä
+# lukumäärä ei yksin ole luotettava merkki (esim. taulukon reunaviivat voivat
+# tuottaa saman verran piirroksia täysin tavallisessa, jo täydellisessä
+# natiivitekstisivussa) - siksi piirroksia vaaditaan JA sivun oma tekstikerros
+# pitää olla epäilyttävän lyhyt suhteessa täyteen sivuun. Tämä osuu tarkasti
+# tapaukseen jossa lisätty/muokattu sisältö on kirjoitettu vektoripolkuina, ei
+# tekstinä (esim. Outlookin selainversion tulostama sähköposti, jonka runko-osa
+# oli vektoripolkuina): sivulla oli 19 piirtoelementtiä ja vain 168 merkkiä omaa
+# tekstiä, jolloin OCR ei aiemmin (yksinkertaisella lukumääräkynnyksellä)
+# lauennut ollenkaan ja sivun oikea sisältö (mm. hintatiedot) jäi kokonaan
+# poimimatta. Jos huomaat vastaavaa, laske DRAWINGS_THRESHOLD:ia tai nosta
+# SUSPICIOUSLY_SHORT_NATIVE_TEXT:ia.
+DRAWINGS_THRESHOLD = 5
+SUSPICIOUSLY_SHORT_NATIVE_TEXT = 500
 
 VALID_OUTPUTS = {"docx", "pdf-searchable", "pdf-text"}
 
@@ -363,7 +373,10 @@ def extract_pages(pdf_path: Path, lang: str, dpi: int, psm: int = 3, preprocess:
     pages = []
     for i, page in enumerate(doc):
         native_text = page_has_text(page)
-        has_visual = len(page.get_images(full=True)) > 0 or len(page.get_drawings()) > DRAWINGS_THRESHOLD
+        has_visual = len(page.get_images(full=True)) > 0 or (
+            len(page.get_drawings()) > DRAWINGS_THRESHOLD
+            and len(native_text) < SUSPICIOUSLY_SHORT_NATIVE_TEXT
+        )
         if not has_visual and len(native_text) >= MIN_TEXT_CHARS:
             pages.append({"index": i, "text": native_text, "source": "native", "image": None})
             print(f"  Sivu {i + 1}: oma tekstikerros ({len(native_text)} merkkiä)")

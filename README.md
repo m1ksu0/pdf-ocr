@@ -199,8 +199,12 @@ Nämä koskevat Tesseract-moottoria.
   luottamukselliselle aineistolle.
 - **Säädettävät vakiot** löytyvät `ocr_pdf.py`-tiedoston alusta:
   `MIN_TEXT_CHARS` (kuinka paljon tekstiä sivulla pitää olla, jotta se
-  luetaan suoraan) ja `DRAWINGS_THRESHOLD` (kuinka monta piirtoelementtiä
-  sivulla saa olla ennen kuin se tulkitaan sekasivuksi).
+  luetaan suoraan), sekä `DRAWINGS_THRESHOLD` ja
+  `SUSPICIOUSLY_SHORT_NATIVE_TEXT` (sivu tulkitaan sekasivuksi kun
+  piirtoelementtejä on enemmän kuin `DRAWINGS_THRESHOLD` JA sivun oma
+  tekstikerros on lyhyempi kuin `SUSPICIOUSLY_SHORT_NATIVE_TEXT` merkkiä —
+  esim. sähköpostista tulostettu sivu, jonka runko-osa on kirjoitettu
+  vektoripolkuina eikä tekstinä).
 - Kun tulosteesta kopioi tekstiä, väliviiva voi kopioitua "pehmeänä tavuviivana" (näkymätön merkki U+00AD). Se ei näy PDF:ssä, mutta voi vaikuttaa haussa.
 - Tulosteiden PDF-teksti käyttää Windowsin Arial-fonttia, jotta €-merkki ja
   ä/ö säilyvät. Jos sitä ei löydy, € korvataan tekstillä "EUR".
