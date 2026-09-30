@@ -102,8 +102,13 @@ python ocr_pdf.py asiakirja.pdf --output docx pdf-searchable pdf-text
 ```
 
 Tulostiedostot tallennetaan oletuksena lähde-PDF:n kansioon nimillä
-`<nimi> (teksti).docx`, `<nimi> (hakukelpoinen).pdf` ja
-`<nimi> (pelkkä teksti).pdf`.
+`<nimi> (teksti, <moottori>).docx`, `<nimi> (hakukelpoinen, <moottori>).pdf` ja
+`<nimi> (pelkkä teksti, <moottori>).pdf` — moottorin nimi (`tesseract`,
+`rapidocr`, `moondream`, `qwen2.5vl`) tulee mukaan, jotta samasta PDF:stä eri
+moottoreilla tehdyt tulokset voi erottaa toisistaan. Jos samanniminen tiedosto
+on jo olemassa (esim. edellinen ajo, tai tiedosto on auki toisessa ohjelmassa),
+perään lisätään juokseva numero `(2)`, `(3)` jne. — vanhaa tiedostoa ei
+ylikirjoiteta eikä ajo keskeydy virheeseen.
 
 ### Kaikki valinnat
 

@@ -88,10 +88,15 @@ OLLAMA_MODELS = {
 }
 VALID_ENGINES = ("tesseract", "rapidocr", *OLLAMA_MODELS)
 
+# Kehote on tarkoituksella englanniksi: testattu, että esim. moondream palauttaa
+# täysin tyhjän vastauksen (0 merkkiä), jos kehote on pidempi suomenkielinen lause
+# - vaikka itse dokumentin sisältö/kuva olisi suomeksi. Englanninkielinen kehote
+# toimii luotettavasti kummallakin moottorilla.
 OLLAMA_OCR_PROMPT = (
-    "Lue tästä kuvasta kaikki näkyvä teksti täsmällisesti, mukaan lukien erikoismerkit "
-    "kuten €, lyhenteet ja käsin kirjoitetut merkinnät. Säilytä alkuperäinen rivijärjestys. "
-    "Älä selitä tai kommentoi mitään, palauta pelkkä tunnistettu teksti sellaisenaan."
+    "Read all visible text in this image exactly, including special characters "
+    "(such as €), abbreviations, and any handwritten annotations. Preserve the "
+    "original line order. Do not explain or comment on anything - return only "
+    "the recognized text as-is."
 )
 
 
@@ -251,7 +256,14 @@ def ollama_recognize(image: Image.Image, model: str) -> str:
             f"Ollama-kutsu epäonnistui ({e}). Varmista että Ollama on käynnissä "
             f"ja malli on ladattu: ollama pull {model}"
         )
-    return response["message"]["content"].strip()
+    content = response["message"]["content"] or ""
+    thinking = response["message"].get("thinking")
+    print(f"    [debug] done_reason={response.get('done_reason')!r}, sisällön pituus={len(content)}")
+    if thinking:
+        print(f"    [debug] thinking: {thinking[:300]!r}")
+    if not content.strip():
+        print(f"    [debug] tyhjä vastaus, koko viesti-olio: {response['message']!r}")
+    return content.strip()
 
 
 def ensure_ollama_model(model: str) -> None:
@@ -262,7 +274,10 @@ def ensure_ollama_model(model: str) -> None:
     except Exception as e:
         sys.exit(f"Ollamaan ei saatu yhteyttä ({e}). Varmista että Ollama on käynnissä.")
 
-    if model in local_models:
+    # Ollama tallentaa mallit oletustagilla ":latest" (esim. "moondream" -> "moondream:latest"),
+    # joten vertaillaan molempia muotoja.
+    tag_with_latest = model if ":" in model else f"{model}:latest"
+    if model in local_models or tag_with_latest in local_models:
         return
 
     answer = input(
@@ -382,9 +397,24 @@ def extract_pages(pdf_path: Path, lang: str, dpi: int, psm: int = 3, preprocess:
     return pages
 
 
-def save_docx(pages: list[dict], pdf_path: Path, outdir: Path, lang: str) -> Path:
+def unique_path(path: Path) -> Path:
+    """Palauttaa polun sellaisenaan jos sitä ei ole vielä olemassa, muuten lisää
+    juoksevan numeron ennen tiedostopäätettä (esim. "(2)", "(3)", ...) kunnes
+    vapaa nimi löytyy. Estää sekä vahingossa ylikirjoittamisen että virheen
+    jos edellinen tulos on auki toisessa ohjelmassa (esim. Word)."""
+    if not path.exists():
+        return path
+    counter = 2
+    while True:
+        candidate = path.with_name(f"{path.stem} ({counter}){path.suffix}")
+        if not candidate.exists():
+            return candidate
+        counter += 1
+
+
+def save_docx(pages: list[dict], pdf_path: Path, outdir: Path, lang: str, engine: str) -> Path:
     """Tallentaa poimitun/OCR:atun tekstin Word-dokumenttina."""
-    out_path = outdir / f"{pdf_path.stem} (teksti).docx"
+    out_path = unique_path(outdir / f"{pdf_path.stem} (teksti, {engine}).docx")
     document = Document()
     document.add_heading(pdf_path.stem, level=1)
 
@@ -449,7 +479,7 @@ def save_searchable_pdf(pdf_path: Path, pages: list[dict], outdir: Path, lang: s
     Huom: esikäsittely on päällä, joten OCR-sivujen kuva on suoristettu ja
     harmaasävyinen (--no-preprocess säilyttää alkuperäisen värillisen kuvan).
     """
-    out_path = outdir / f"{pdf_path.stem} (hakukelpoinen).pdf"
+    out_path = unique_path(outdir / f"{pdf_path.stem} (hakukelpoinen, {engine}).pdf")
     src = pymupdf.open(pdf_path)
     result = pymupdf.open()
 
@@ -519,14 +549,14 @@ def wrap_text(text: str, max_width: float, width_fn) -> list[str]:
     return lines
 
 
-def save_text_pdf(pages: list[dict], pdf_path: Path, outdir: Path) -> Path:
+def save_text_pdf(pages: list[dict], pdf_path: Path, outdir: Path, engine: str) -> Path:
     """
     Kokoaa uuden, kevyen PDF:n, jossa teksti on aseteltu uudelleen tavallisina
     riveinä (ei alkuperäistä ulkoasua/kuvia, mutta pieni koko ja selkeä
     hakukelpoinen teksti). Rivit katkaistaan ja jaetaan tarvittaessa usealle
     sivulle, joten mitään ei jää pois vaikka teksti olisi pitkä.
     """
-    out_path = outdir / f"{pdf_path.stem} (pelkkä teksti).pdf"
+    out_path = unique_path(outdir / f"{pdf_path.stem} (pelkkä teksti, {engine}).pdf")
     doc = pymupdf.open()
     page_rect = pymupdf.paper_rect("a4")
     margin = 50
@@ -648,13 +678,13 @@ def main() -> None:
 
     print("\nTallennetaan:")
     if "docx" in outputs:
-        path = save_docx(pages, args.pdf, outdir, args.lang)
+        path = save_docx(pages, args.pdf, outdir, args.lang, args.engine)
         print(f"  DOCX: {path}")
     if "pdf-searchable" in outputs:
         path = save_searchable_pdf(args.pdf, pages, outdir, args.lang, args.psm, args.engine)
         print(f"  Hakukelpoinen PDF: {path}")
     if "pdf-text" in outputs:
-        path = save_text_pdf(pages, args.pdf, outdir)
+        path = save_text_pdf(pages, args.pdf, outdir, args.engine)
         print(f"  Pelkkä teksti PDF: {path}")
 
     print("\nValmis.")

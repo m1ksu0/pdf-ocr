@@ -11,9 +11,11 @@ Tesseract-OCR/
 tessdata/
 
 # Työkalun tuottamat tulostiedostot (voivat sisältää luottamuksellista aineistoa)
-*(teksti).docx
-*(hakukelpoinen).pdf
-*(pelkkä teksti).pdf
+# Tiedostonimessä on moottorin nimi ja mahdollinen juokseva numero, esim.
+# "asiakirja (teksti, moondream) (2).docx" - siksi jokerimerkki lopussa.
+*(teksti*).docx
+*(hakukelpoinen*).pdf
+*(pelkkä teksti*).pdf
 out/
 output/
 
