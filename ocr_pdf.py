@@ -23,6 +23,16 @@ Moottorit (--engine):
     rapidocr   -- syväoppimispohjainen (PaddleOCR-mallit); lukee täytettyjen lomakkeiden
                   numerot usein paremmin ilman esikäsittelyä, mutta ei tunnista ä/ö-merkkejä
                   (asennus: pip install -r requirements-rapidocr.txt)
+    moondream  -- pieni paikallinen näkö-kielimalli Ollaman kautta; nopein VLM-vaihtoehto,
+                  hyvä nopeaan kokeiluun (asennus: pip install -r requirements-ollama.txt,
+                  ollama pull moondream)
+    qwen2.5vl  -- paikallinen näkö-kielimalli Ollaman kautta (qwen2.5vl:3b); tarkempi kuin
+                  moondream, hitaampi. Molemmat VLM-moottorit "ymmärtävät" kuvaa kokonaisuutena
+                  ja voivat pärjätä paremmin monikerroksisissa/käsin täydennetyissä
+                  dokumenteissa kuin Tesseract/RapidOCR, mutta eivät palauta sanojen
+                  sijaintitietoa (hakukelpoisessa PDF:ssä koko sivu peitetään yhdellä
+                  näkymättömällä tekstilohkolla, ei sanakohtaisesti aseteltuna)
+                  (asennus: pip install -r requirements-ollama.txt, ollama pull qwen2.5vl:3b)
 
 Edellytykset:
     - Tesseract OCR asennettuna koneelle, katso README.md
@@ -70,7 +80,19 @@ MIN_TEXT_CHARS = 20
 DRAWINGS_THRESHOLD = 100
 
 VALID_OUTPUTS = {"docx", "pdf-searchable", "pdf-text"}
-VALID_ENGINES = ("tesseract", "rapidocr")
+
+# Ollama-moottorin nimi -> paikallisesti ajettava mallitagi (ollama pull <tagi>)
+OLLAMA_MODELS = {
+    "moondream": "moondream",
+    "qwen2.5vl": "qwen2.5vl:3b",
+}
+VALID_ENGINES = ("tesseract", "rapidocr", *OLLAMA_MODELS)
+
+OLLAMA_OCR_PROMPT = (
+    "Lue tästä kuvasta kaikki näkyvä teksti täsmällisesti, mukaan lukien erikoismerkit "
+    "kuten €, lyhenteet ja käsin kirjoitetut merkinnät. Säilytä alkuperäinen rivijärjestys. "
+    "Älä selitä tai kommentoi mitään, palauta pelkkä tunnistettu teksti sellaisenaan."
+)
 
 
 def configure_tesseract(tesseract_cmd: str | None) -> None:
@@ -191,6 +213,77 @@ def rapidocr_recognize(image: Image.Image) -> list[tuple[list, str]]:
     return [(box, text) for box, text, _score in (result or [])]
 
 
+_OLLAMA_CLIENT = None
+
+
+def get_ollama_client():
+    """Lataa Ollama-kirjaston vasta tarvittaessa (valinnainen riippuvuus)."""
+    global _OLLAMA_CLIENT
+    if _OLLAMA_CLIENT is None:
+        try:
+            import ollama
+        except ImportError:
+            sys.exit("Ollama-kirjasto ei ole asennettu. Asenna: python -m pip install -r requirements-ollama.txt")
+        _OLLAMA_CLIENT = ollama
+    return _OLLAMA_CLIENT
+
+
+def ollama_recognize(image: Image.Image, model: str) -> str:
+    """Ajaa paikallisen Ollama-näkömallin kuvalle ja palauttaa tunnistetun tekstin.
+
+    Vaatii, että Ollama on käynnissä koneella (oletus: http://localhost:11434) ja
+    että malli on ladattu etukäteen komennolla `ollama pull <malli>`.
+    """
+    ollama = get_ollama_client()
+    buffer = io.BytesIO()
+    image.convert("RGB").save(buffer, format="PNG")
+    try:
+        response = ollama.chat(
+            model=model,
+            messages=[{
+                "role": "user",
+                "content": OLLAMA_OCR_PROMPT,
+                "images": [buffer.getvalue()],
+            }],
+        )
+    except Exception as e:
+        sys.exit(
+            f"Ollama-kutsu epäonnistui ({e}). Varmista että Ollama on käynnissä "
+            f"ja malli on ladattu: ollama pull {model}"
+        )
+    return response["message"]["content"].strip()
+
+
+def ensure_ollama_model(model: str) -> None:
+    """Varmistaa että malli on ladattuna paikallisesti; kysyy käyttäjältä lupaa ennen latausta."""
+    ollama = get_ollama_client()
+    try:
+        local_models = {m.model for m in ollama.list().models}
+    except Exception as e:
+        sys.exit(f"Ollamaan ei saatu yhteyttä ({e}). Varmista että Ollama on käynnissä.")
+
+    if model in local_models:
+        return
+
+    answer = input(
+        f"Mallia '{model}' ei löydy paikallisesti. Ladataanko nyt (voi kestää "
+        f"useita minuutteja mallin koosta ja verkkoyhteydestä riippuen)? [k/E]: "
+    ).strip().lower()
+    if answer not in ("k", "kyllä", "y", "yes"):
+        sys.exit(f"Mallia ei ladattu. Lataa se tarvittaessa itse: ollama pull {model}")
+
+    print(f"Ladataan mallia '{model}'...")
+    last_status = None
+    for progress in ollama.pull(model, stream=True):
+        if progress.status != last_status:
+            print(f"  {progress.status}")
+            last_status = progress.status
+        if progress.total and progress.completed:
+            percent = 100 * progress.completed / progress.total
+            print(f"\r  {progress.status}: {percent:.0f}%", end="", flush=True)
+    print("\nLataus valmis.")
+
+
 def boxes_to_text(boxes: list[tuple[list, str]]) -> str:
     """
     Kokoaa RapidOCR:n tekstilaatikot riveiksi: laatikot ryhmitellään samalle
@@ -269,6 +362,9 @@ def extract_pages(pdf_path: Path, lang: str, dpi: int, psm: int = 3, preprocess:
                 # RapidOCR toimii parhaiten alkuperäisellä kuvalla, esikäsittelyä ei käytetä
                 boxes = rapidocr_recognize(image)
                 ocr_text = boxes_to_text(boxes).strip()
+            elif engine in OLLAMA_MODELS:
+                # Näkö-kielimallit näkevät kuvan kokonaisuutena, alkuperäinen väri säilytetään
+                ocr_text = ollama_recognize(image, OLLAMA_MODELS[engine])
             else:
                 if preprocess:
                     image = preprocess_image(image)
@@ -324,7 +420,28 @@ def add_rapidocr_page(result: pymupdf.Document, p: dict) -> None:
                          fontfile=str(font_path) if font_path else None, render_mode=3)
 
 
-def save_searchable_pdf(pdf_path: Path, pages: list[dict], outdir: Path, lang: str, psm: int = 3) -> Path:
+def add_llm_text_page(result: pymupdf.Document, p: dict) -> None:
+    """Lisää sivun kuvana ja peittää koko sivun yhdellä näkymättömällä tekstilaatikolla.
+
+    Näkö-kielimallit (Ollama) eivät palauta sanojen sijaintitietoa kuten
+    Tesseract/RapidOCR, joten tarkkaa sanakohtaista asettelua ei voi tehdä —
+    koko tunnistettu teksti asetetaan yhtenä näkymättömänä lohkona kuvan päälle.
+    Tekstin voi silti hakea ja kopioida, vaikka se ei asetu visuaalisesti
+    täsmälleen oikeiden sanojen kohdalle.
+    """
+    image, dpi = p["image"], p["dpi"]
+    scale = 72.0 / dpi
+    page = result.new_page(width=image.width * scale, height=image.height * scale)
+    buffer = io.BytesIO()
+    image.convert("RGB").save(buffer, format="JPEG", quality=85)
+    page.insert_image(page.rect, stream=buffer.getvalue())
+    font_path = find_unicode_font()
+    page.insert_textbox(page.rect, p["text"], fontsize=8, fontname="unifont" if font_path else "helv",
+                        fontfile=str(font_path) if font_path else None, render_mode=3)
+
+
+def save_searchable_pdf(pdf_path: Path, pages: list[dict], outdir: Path, lang: str, psm: int = 3,
+                        engine: str = "tesseract") -> Path:
     """
     Kokoaa hakukelpoisen PDF:n: sivut, joilla oli jo tekstikerros, kopioidaan
     sellaisenaan; OCR-sivut korvataan pytesseractin tuottamalla
@@ -341,6 +458,8 @@ def save_searchable_pdf(pdf_path: Path, pages: list[dict], outdir: Path, lang: s
             result.insert_pdf(src, from_page=p["index"], to_page=p["index"])
         elif p.get("boxes") is not None:
             add_rapidocr_page(result, p)
+        elif engine in OLLAMA_MODELS:
+            add_llm_text_page(result, p)
         else:
             # image_to_pdf_or_hocr palauttaa yhden sivun PDF:n, jossa kuva ja
             # sen päällä näkymätön (render_mode invisible) tekstikerros.
@@ -472,7 +591,8 @@ def main() -> None:
         help="Lopputulosmuoto(t). Jos jätetään pois, kysytään interaktiivisesti.",
     )
     parser.add_argument("--engine", choices=VALID_ENGINES, default="tesseract",
-                        help="OCR-moottori: tesseract (oletus) tai rapidocr (syväoppiminen; ei tunnista ä/ö-merkkejä)")
+                        help="OCR-moottori: tesseract (oletus), rapidocr (syväoppiminen; ei tunnista ä/ö-merkkejä), "
+                             "moondream tai qwen2.5vl (paikalliset näkö-kielimallit Ollaman kautta, ks. README)")
     parser.add_argument("--lang", default="fin_best",
                         help="Tesseract-kielikoodi (oletus: fin_best, tarkempi suomen malli; jos sitä ei ole asennettuna, käytetään fin)")
     parser.add_argument("--dpi", type=int, default=400, help="Renderöintitarkkuus OCR-sivuille (oletus: 400)")
@@ -500,6 +620,13 @@ def main() -> None:
         if ignored:
             print("Huom: " + ", ".join(ignored) + " ei vaikuta RapidOCR-moottoriin.")
         print("OCR-moottori: rapidocr (ei tunnista ä/ö-merkkejä)")
+    elif args.engine in OLLAMA_MODELS:
+        ignored = [name for name, on in (("--remove-lines", args.remove_lines),
+                                         ("--psm", args.psm != 3), ("--lang", args.lang != "fin_best")) if on]
+        if ignored:
+            print("Huom: " + ", ".join(ignored) + f" ei vaikuta {args.engine}-moottoriin.")
+        print(f"OCR-moottori: {args.engine} (Ollama, malli {OLLAMA_MODELS[args.engine]}, paikallinen)")
+        ensure_ollama_model(OLLAMA_MODELS[args.engine])
     elif args.lang == "fin_best":
         try:
             installed = pytesseract.get_languages()
@@ -524,7 +651,7 @@ def main() -> None:
         path = save_docx(pages, args.pdf, outdir, args.lang)
         print(f"  DOCX: {path}")
     if "pdf-searchable" in outputs:
-        path = save_searchable_pdf(args.pdf, pages, outdir, args.lang, args.psm)
+        path = save_searchable_pdf(args.pdf, pages, outdir, args.lang, args.psm, args.engine)
         print(f"  Hakukelpoinen PDF: {path}")
     if "pdf-text" in outputs:
         path = save_text_pdf(pages, args.pdf, outdir)

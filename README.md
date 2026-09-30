@@ -81,7 +81,7 @@ Muille kielille saman voi tehdä samasta repositoriosta, ja kielen valitaan
 
 - **Vedä ja pudota:** vedä PDF hiirellä `ocr_pdf.bat`-tiedoston päälle.
 - **Tuplaklikkaus:** avaa `ocr_pdf.bat` ja vedä PDF ikkunaan tai kirjoita polku.
-- Bat kysyy ensin moottorin numerolla (**1** = Tesseract, **2** = RapidOCR; Enter = 1), sitten tarkkuuden (dpi, oletus 400) ja sivunjakotilan (psm, oletus 3).
+- Bat kysyy ensin moottorin numerolla (**1** = Tesseract, **2** = RapidOCR, **3** = moondream, **4** = qwen2.5vl; Enter = 1), sitten tarkkuuden (dpi, oletus 400) ja sivunjakotilan (psm, oletus 3).
   Enter hyväksyy oletuksen. Sen jälkeen skripti kysyy tulostemuodon valikosta.
 - Ikkuna jää auki ajon jälkeen, jotta näet tulostiedostojen polut.
 
@@ -110,7 +110,7 @@ Tulostiedostot tallennetaan oletuksena lähde-PDF:n kansioon nimillä
 | Valinta | Selitys |
 |---|---|
 | `--output docx pdf-searchable pdf-text` | Tulostemuoto(t). Jos jätetään pois, kysytään valikosta. |
-| `--engine tesseract` | OCR-moottori: `tesseract` (oletus) tai `rapidocr` (ks. yllä). |
+| `--engine tesseract` | OCR-moottori: `tesseract` (oletus), `rapidocr`, `moondream` tai `qwen2.5vl` (ks. alla). |
 | `--lang fin_best` | OCR-kieli. Oletus `fin_best`. Useita: `--lang fin+eng`. |
 | `--dpi 400` | Sivun renderöintitarkkuus OCR:ää varten. Oletus 400. Isompi (esim. 600) voi auttaa pienellä tekstillä, mutta hidastaa. |
 | `--psm 3` | Sivunjakotila. `3` automaattinen (oletus), `4` yksi sarake, `6` yksi yhtenäinen lohko (lomakkeet, taulukot), `11`/`12` hajanainen teksti. |
@@ -125,15 +125,29 @@ Tulostiedostot tallennetaan oletuksena lähde-PDF:n kansioon nimillä
 |---|---|---|
 | `tesseract` (oletus) | Nopea (1–2 s/sivu), tukee suomen ä/ö-merkkejä, toimii ilman näytönohjainta | Täytetyt lomakkeet, joissa numerot ovat viivojen päällä, vaativat usein esikäsittelyä (`--remove-lines`, `--psm 6`) |
 | `rapidocr` | Syväoppimiseen perustuva (PaddleOCR:n mallit). Lukee täytettyjen lomakkeiden numerot usein hyvin ilman esikäsittelyä | Ei tunnista ä/ö-merkkejä (kirjoittaa esim. "tyot", "lisa"). Hitaampi (n. 7–9 s/sivu). `--lang`, `--psm` ja `--remove-lines` eivät vaikuta |
+| `moondream` | Pieni paikallinen näkö-kielimalli (Ollama). Nopein VLM-vaihtoehto, hyvä nopeaan kokeiluun | Tarkkuus vaatimattomampi tiheässä/muodollisessa tekstissä kuin qwen2.5vl:llä. Ei sanojen sijaintitietoa: hakukelpoisessa PDF:ssä koko sivu peitetään yhdellä tekstilohkolla, ei sanakohtaisesti |
+| `qwen2.5vl` | Paikallinen näkö-kielimalli (Ollama, `qwen2.5vl:3b`). Ymmärtää kuvaa kokonaisuutena — voi pärjätä Tesseractia/RapidOCR:ää paremmin monikerroksisissa dokumenteissa (esim. sähköpostista tulostettu sivu, jonka päälle on vielä kirjoitettu käsin) ja erikoismerkeissä (€, €/jm) | Hitain vaihtoehto CPU:lla (ilman näytönohjainta useita kymmeniä sekunteja/sivu). Sama sijaintitietorajoitus kuin moondreamilla. Voi hallusinoida epäselvässä kohdassa — tarkista tärkeät numerot aina käsin |
 
-RapidOCR on valinnainen. Asenna se erikseen:
+RapidOCR ja Ollama-moottorit ovat valinnaisia. Asenna tarvitsemasi erikseen:
 
 ```bash
 python -m pip install -r requirements-rapidocr.txt
+python -m pip install -r requirements-ollama.txt
+```
+
+`moondream`/`qwen2.5vl` vaativat lisäksi [Ollaman](https://ollama.com) asennuksen koneelle, ja
+että Ollama on käynnissä (asennuksen jälkeen se yleensä käynnistyy automaattisesti taustalle).
+Lataa käytettävä malli kertaalleen ennen ensimmäistä ajoa:
+
+```bash
+ollama pull moondream
+ollama pull qwen2.5vl:3b
 ```
 
 ```bash
 python ocr_pdf.py lomake.pdf --engine rapidocr
+python ocr_pdf.py kirje.pdf --engine moondream
+python ocr_pdf.py kirje.pdf --engine qwen2.5vl
 ```
 
 Kokeilu kahdella sivulla (skannattu täytetty lomake ja sähköpostista kuvattu
@@ -192,5 +206,6 @@ Nämä koskevat Tesseract-moottoria.
 - `ocr_pdf.bat` — vedä ja pudota -käynnistin Windowsille
 - `requirements.txt` — Python-riippuvuudet
 - `requirements-rapidocr.txt` — valinnainen: RapidOCR-moottori
+- `requirements-ollama.txt` — valinnainen: moondream/qwen2.5vl-moottorit (vaatii lisäksi Ollaman asennuksen)
 - `.gitignore` — pitää pois tulosteet, PDF-aineiston, kielimallit ja välimuistit
 - `README.md` — tämä tiedosto
