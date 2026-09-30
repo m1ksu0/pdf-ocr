@@ -230,6 +230,10 @@ def rapidocr_recognize(image: Image.Image) -> list[tuple[list, str]]:
 
 _OLLAMA_CLIENT = None
 
+# Kuvan pisimmän sivun enimmäiskoko pikseleinä ja Ollaman kontekstikoko (kuva + vastausteksti)
+OLLAMA_MAX_IMAGE_SIDE = 2560
+OLLAMA_NUM_CTX = 16384
+
 
 def get_ollama_client():
     """Lataa Ollama-kirjaston vasta tarvittaessa (valinnainen riippuvuus)."""
@@ -250,8 +254,15 @@ def ollama_recognize(image: Image.Image, model: str) -> str:
     että malli on ladattu etukäteen komennolla `ollama pull <malli>`.
     """
     ollama = get_ollama_client()
+    image = image.convert("RGB")
+    # Iso kuva (esim. 400 dpi A4) tuottaisi tuhansia kuvatokeneita ja ylittäisi kontekstin
+    # ("exceed_context_size_error"), joten pienennetään pisin sivu järkevään kokoon.
+    longest = max(image.size)
+    if longest > OLLAMA_MAX_IMAGE_SIDE:
+        scale = OLLAMA_MAX_IMAGE_SIDE / longest
+        image = image.resize((round(image.width * scale), round(image.height * scale)), Image.LANCZOS)
     buffer = io.BytesIO()
-    image.convert("RGB").save(buffer, format="PNG")
+    image.save(buffer, format="PNG")
     try:
         response = ollama.chat(
             model=model,
@@ -260,6 +271,8 @@ def ollama_recognize(image: Image.Image, model: str) -> str:
                 "content": OLLAMA_OCR_PROMPT,
                 "images": [buffer.getvalue()],
             }],
+            options={"num_ctx": OLLAMA_NUM_CTX, "temperature": 0},
+            keep_alive="15m",
         )
     except Exception as e:
         sys.exit(
